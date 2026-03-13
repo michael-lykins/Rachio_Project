@@ -1,0 +1,19 @@
+# ── HTTP ──────────────────────────────────────────────────────────────────
+requests==2.32.3
+
+# ── Elasticsearch ─────────────────────────────────────────────────────────
+elasticsearch[async]==8.13.2
+
+# ── OpenTelemetry — Elastic Distribution (EDOT) ───────────────────────────
+# Single package replaces the vanilla OTel core SDK, OTLP exporters, and all
+# instrumentation libraries.  Providers + auto-instrumentation are configured
+# entirely by the `opentelemetry-instrument` entry-point (see Dockerfile CMD).
+# Run `edot-bootstrap --action=install` after pip install to let EDOT discover
+# and install any additional per-library instrumentors it finds in the venv.
+elastic-opentelemetry
+
+# ── Scheduler ─────────────────────────────────────────────────────────────
+APScheduler==3.10.4
+
+# ── Environment / Config ──────────────────────────────────────────────────
+python-dotenv==1.0.1

@@ -1,0 +1,23 @@
+# Sensitive config — NEVER commit
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Docker
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
