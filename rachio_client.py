@@ -8,10 +8,11 @@ richer context in Elastic APM.
 """
 
 import logging
-import time
 from typing import Any
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from opentelemetry import trace
 
 from config import RachioConfig
@@ -28,24 +29,51 @@ class RachioAPIError(Exception):
         self.status_code = status_code
 
 
+def _make_retry_session(api_key: str) -> requests.Session:
+    """
+    Build a requests.Session with automatic retry-on-stale-connection handling.
+
+    The Rachio API server silently closes idle TCP connections after ~60 s.
+    Because every collector polls on a fixed interval the connection pool will
+    often hold a dead socket.  Mounting a Retry adapter with ``read=3`` causes
+    urllib3 to transparently re-open the connection and replay the request
+    instead of surfacing a RemoteDisconnected / ConnectionError to the caller.
+    """
+    session = requests.Session()
+    session.headers.update(
+        {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+    )
+    retry = Retry(
+        total=3,
+        connect=3,          # retry on failed connection attempts
+        read=3,             # retry on RemoteDisconnected / read timeouts
+        backoff_factor=0.5, # wait 0.5 s, 1 s, 2 s between retries
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "PUT"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 class RachioClient:
     """
     Thread-safe Rachio API client.
 
-    Uses a persistent requests.Session with a shared Authorization header
-    so connection pooling is reused across all collector threads.
+    Uses a persistent requests.Session with connection-level retry so that
+    stale keep-alive connections are transparently recovered without raising
+    errors to callers.
     """
 
     def __init__(self, config: RachioConfig):
         self._cfg = config
-        self._session = requests.Session()
-        self._session.headers.update(
-            {
-                "Authorization": f"Bearer {config.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            }
-        )
+        self._session = _make_retry_session(config.api_key)
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
