@@ -19,8 +19,9 @@ from opentelemetry.instrumentation.system_metrics import SystemMetricsInstrument
 
 # ─── Configure Resource (service metadata) ──────────────────────────────
 resource = Resource.create({
-    "service.name": "rachio-client",
-    "service.version": "0.1.0",
+    "service.name":           "rachio-client",
+    "service.version":        "0.1.0",
+    "deployment.environment": "production",
 })
 
 # ─── Tracing Setup ──────────────────────────────────────────────────────
