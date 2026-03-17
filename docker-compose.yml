@@ -20,9 +20,10 @@ services:
       - OTEL_EXPORTER_OTLP_HEADERS=${OTEL_EXPORTER_OTLP_HEADERS}
       - OTEL_METRIC_EXPORT_INTERVAL_MS=${OTEL_METRIC_EXPORT_INTERVAL_MS:-30000}
 
-      # Service identity shown in Elastic APM
+      # Service identity + environment shown in Elastic APM
       - OTEL_SERVICE_NAME=rachio-collector
       - OTEL_SERVICE_VERSION=1.0.0
+      - OTEL_RESOURCE_ATTRIBUTES=deployment.environment=production
 
     # Resource limits — conservative for a background collector
     deploy:

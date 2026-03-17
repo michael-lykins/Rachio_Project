@@ -45,6 +45,12 @@ def _make_retry_session(api_key: str) -> requests.Session:
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            # Force a fresh TCP connection on every request.
+            # The Rachio API silently closes idle keep-alive connections after
+            # ~60 s, which causes RemoteDisconnected / ProtocolError on the
+            # next poll.  urllib3's read-retry logic does not cover ProtocolError
+            # (only ReadTimeoutError), so disabling keep-alive is the cleanest fix.
+            "Connection": "close",
         }
     )
     retry = Retry(
