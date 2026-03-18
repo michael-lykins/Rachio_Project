@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: elastic-stack
+  labels:
+    app: logstash
+    app.kubernetes.io/part-of: elastic-stack
+data:
+  # ── logstash.yml ─────────────────────────────────────────────────────────
+  logstash.yml: |
+    api.http.host: "0.0.0.0"
+
+    # Disable built-in X-Pack monitoring — we use Elastic Agent for cluster monitoring
+    xpack.monitoring.enabled: false
+
+    # Pipeline workers — 1 is safe for Docker Desktop; increase if throughput demands it
+    pipeline.workers: 1
+    pipeline.batch.size: 125
+    pipeline.batch.delay: 50
+
+    # Persist queue to survive pod restarts
+    queue.type: persisted
+    queue.max_bytes: 1gb
+
+    log.level: info
+    log.format: json
+
+  # ── pipelines.yml ─────────────────────────────────────────────────────────
+  pipelines.yml: |
+    - pipeline.id: main
+      path.config: "/usr/share/logstash/pipeline/logstash.conf"
+      queue.type: persisted
+
+  # ── logstash.conf (main pipeline) ─────────────────────────────────────────
+  #
+  #  Inputs:
+  #    • Beats (5044)  — Filebeat, Metricbeat, etc.
+  #    • HTTP  (8080)  — JSON POST from any HTTP client
+  #
+  #  Output:
+  #    • Elasticsearch data streams on your Elastic Cloud cluster
+  #      (logs-generic.logstash-default)
+  #
+  logstash.conf: |
+    input {
+      beats {
+        port => 5044
+        tags => ["beats"]
+      }
+
+      http {
+        port => 8080
+        codec => json
+        tags => ["http"]
+        response_headers => {
+          "Content-Type" => "application/json"
+          "Access-Control-Allow-Origin" => "*"
+        }
+      }
+    }
+
+    filter {
+      # Ensure every event has a timestamp
+      if ![event][created] {
+        ruby {
+          code => "event.set('[event][created]', event.get('@timestamp'))"
+        }
+      }
+
+      # Tag with pipeline metadata
+      mutate {
+        add_field => {
+          "[event][module]"   => "logstash"
+          "[agent][type]"     => "logstash"
+          "[agent][version]"  => "${LOGSTASH_VERSION:unknown}"
+        }
+      }
+    }
+
+    output {
+      elasticsearch {
+        hosts         => ["${ES_ENDPOINT}"]
+        api_key       => "${ES_API_KEY}"
+
+        # Write to a data stream
+        data_stream           => true
+        data_stream_type      => "logs"
+        data_stream_dataset   => "generic.logstash"
+        data_stream_namespace => "default"
+
+        ssl_verification_mode => "full"
+      }
+
+      # Helpful for debugging in kubectl logs — remove in production
+      stdout {
+        codec => rubydebug { metadata => false }
+      }
+    }

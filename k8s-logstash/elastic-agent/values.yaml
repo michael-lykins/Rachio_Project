@@ -1,0 +1,38 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  Elastic Agent Helm values — Kubernetes monitoring
+#
+#  These values are derived from the install command provided by Elastic Cloud.
+#  The api_key below is the RAW (decoded) key, not the base64 form.
+#
+#  Install / upgrade:
+#    helm repo add elastic https://helm.elastic.co/
+#    helm repo update
+#    helm install elastic-agent elastic/elastic-agent \
+#      --version 9.3.1 \
+#      -n kube-system \
+#      -f elastic-agent/values.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+outputs:
+  default:
+    # Elastic Cloud serverless endpoint (port 443)
+    url: "https://mlykins-home-o11y-af8c2d.es.us-east-2.aws.elastic.cloud:443"
+    type: ESPlainAuthAPI
+    # IMPORTANT: replace with your decoded API key
+    # To decode from the base64 form Elastic gave you:
+    #   echo "<base64-encoded-api-key>" | base64 -d
+    api_key: "<id>:<secret>"  # Replace with your actual decoded API key
+    _write_to_logs_streams: true
+
+kubernetes:
+  enabled: true
+  onboardingID: "47d48c43-bc40-4280-b719-0e9b214354e3"
+
+  containers:
+    logs:
+      vars:
+        processors:
+          - add_fields:
+              target: "@metadata"
+              fields:
+                raw_index: "logs.ecs"
