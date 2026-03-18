@@ -5,9 +5,20 @@ Thin HTTP wrapper around the Rachio REST APIs. Every public method is
 traced automatically via the OTel RequestsInstrumentor (applied in
 otel/setup.py). Additional span attributes are set manually for
 richer context in Elastic APM.
+
+Rate limiting
+-------------
+Rachio enforces a hard limit of 3 500 API calls per day per account.
+This module tracks calls in a file-backed counter that resets at midnight
+and raises RuntimeError before the limit is hit.  An in-process TTL cache
+reduces redundant calls for data that changes infrequently.
 """
 
+import json
 import logging
+import os
+import time
+from datetime import date
 from typing import Any
 
 import requests
@@ -19,6 +30,56 @@ from config import RachioConfig
 
 logger = logging.getLogger(__name__)
 tracer = trace.get_tracer(__name__)
+
+# ── Rate-limit constants ──────────────────────────────────────────────────────
+DAILY_CALL_LIMIT = 3_500
+DAILY_CALL_WARN_THRESHOLD = int(DAILY_CALL_LIMIT * 0.90)   # warn at 90 %
+_COUNTER_FILE = os.getenv("RACHIO_CALL_COUNTER_FILE", "/tmp/rachio_daily_calls.json")
+
+# ── In-process TTL response cache: url → (expires_monotonic, data) ───────────
+_cache: dict[str, tuple[float, Any]] = {}
+
+
+# ── Daily call counter (file-backed, resets at midnight) ─────────────────────
+
+def _load_counter() -> dict:
+    today = str(date.today())
+    if os.path.exists(_COUNTER_FILE):
+        try:
+            with open(_COUNTER_FILE) as f:
+                data = json.load(f)
+            if data.get("date") == today:
+                return data
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"date": today, "count": 0}
+
+
+def _save_counter(counter: dict) -> None:
+    try:
+        with open(_COUNTER_FILE, "w") as f:
+            json.dump(counter, f)
+    except OSError as exc:
+        logger.warning("Could not persist Rachio call counter: %s", exc)
+
+
+def _check_and_increment() -> int:
+    """Increment the daily counter; raise RuntimeError if the limit is reached."""
+    counter = _load_counter()
+    if counter["count"] >= DAILY_CALL_LIMIT:
+        raise RuntimeError(
+            f"Rachio daily API limit reached ({DAILY_CALL_LIMIT} calls). "
+            "Counter resets at midnight."
+        )
+    counter["count"] += 1
+    _save_counter(counter)
+    remaining = DAILY_CALL_LIMIT - counter["count"]
+    if counter["count"] >= DAILY_CALL_WARN_THRESHOLD:
+        logger.warning(
+            "Rachio API budget low: %d/%d calls used (%d remaining today).",
+            counter["count"], DAILY_CALL_LIMIT, remaining,
+        )
+    return counter["count"]
 
 
 class RachioAPIError(Exception):
@@ -83,18 +144,38 @@ class RachioClient:
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
-    def _get(self, base_url: str, path: str, params: dict | None = None) -> Any:
+    def _get(self, base_url: str, path: str, params: dict | None = None, ttl: int = 0) -> Any:
+        """
+        GET with optional TTL caching and daily rate-limit enforcement.
+
+        ttl=0  (default) → no cache, always hits the API.
+        ttl>0            → serve from in-process cache if fresh; otherwise fetch.
+        params are included in the cache key so different queries are stored separately.
+        """
         url = f"{base_url}{path}"
+        cache_key = f"{url}?{params}" if params else url
+
+        if ttl > 0:
+            entry = _cache.get(cache_key)
+            if entry and time.monotonic() < entry[0]:
+                logger.debug("Cache hit for %s", cache_key)
+                return entry[1]
+
         with tracer.start_as_current_span(f"rachio.get {path}") as span:
             span.set_attribute("http.url", url)
             span.set_attribute("rachio.path", path)
             try:
+                call_n = _check_and_increment()
+                span.set_attribute("rachio.daily_call_count", call_n)
                 resp = self._session.get(url, params=params, timeout=15)
                 span.set_attribute("http.status_code", resp.status_code)
                 if not resp.ok:
                     span.set_status(trace.StatusCode.ERROR, resp.text[:200])
                     raise RachioAPIError(resp.status_code, resp.text[:200])
-                return resp.json()
+                data = resp.json()
+                if ttl > 0:
+                    _cache[cache_key] = (time.monotonic() + ttl, data)
+                return data
             except requests.RequestException as exc:
                 span.record_exception(exc)
                 span.set_status(trace.StatusCode.ERROR, str(exc))
@@ -121,11 +202,11 @@ class RachioClient:
 
     def get_person_info(self) -> dict:
         """Return the authenticated user's account info including device IDs."""
-        return self._get(self._cfg.base_url, "/person/info")
+        return self._get(self._cfg.base_url, "/person/info", ttl=300)
 
     def get_person(self, person_id: str) -> dict:
         """Return full person record by ID."""
-        return self._get(self._cfg.base_url, f"/person/{person_id}")
+        return self._get(self._cfg.base_url, f"/person/{person_id}", ttl=300)
 
     # ── Device ────────────────────────────────────────────────────────────
 
